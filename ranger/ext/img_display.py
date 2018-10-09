@@ -140,7 +140,7 @@ class W3MImageDisplayer(ImageDisplayer, FileManagerAware):
         # default to using w3m's values in case ioctl fails
         xpixels = geom["w3m"]["w"]
         ypixels = geom["w3m"]["h"]
-        font_dims = {"w": xpixels // cols, "h": ypixels // rows}
+        font = {"w": xpixels // cols, "h": ypixels // rows}
         # also keep `w3m_ofset` because when ioctl fails it's impossible
         # to get reliable font dimensions for some terminals(*), which
         # makes it impossible to reliably calculate the border size.
@@ -148,22 +148,24 @@ class W3MImageDisplayer(ImageDisplayer, FileManagerAware):
         # xterm (without a border) cleanly placing w3m. Relying on w3m or ioctl
         # would cause atleast a couple px of misalignment
         border = self.fm.settings.w3m_offset
-        # some terminals (terminator, gnome term?) cause ioctl to return 0,0
         #
         # TODO: Account for terminals where ioctl differs from w3m in width
         # because the scrollbar is enabled. Currently I know Uxterm does it
         if geom["ioctl"]["w"] + geom["ioctl"]["h"] > 0:
             # use smallest value for font size calc but biggest for border calc
             if geom["ioctl"]["h"] < geom["w3m"]["h"]:
-                font_dims = {"w": geom["ioctl"]["w"] // cols,
-                             "h": geom["ioctl"]["h"] // rows}
-                total_height_rows = rows * font_dims["h"]
-                border = (ypixels - total_height_rows) // 2
+                font = {"w": geom["ioctl"]["w"] // cols,
+                        "h": geom["ioctl"]["h"] // rows}
+                total_height_rows = rows * font["h"]
+                # mlterm's width and height are all over the place depending on size so
+                # unless the difference between w3m and ioctl is not equal assume no border
+                if (geom["w3m"]["h"] - geom["ioctl"]["h"]) == (geom["w3m"]["h"] - geom["ioctl"]["h"]):
+                    border = (ypixels - total_height_rows) // 2
 
-        # Quickly tested this in st, urxvt terminator, xterm, mlterm
+        # Quickly tested st, urxvt terminator, xterm, mlterm
         # with different geometry, fonts and border sizes
         ## *) terminator & gnome-terminal
-        return font_dims["w"], font_dims["h"], border
+        return font["w"], font["h"], border
 
     def draw(self, path, start_x, start_y, width, height):
         if not self.is_initialized or self.process.poll() is not None:
@@ -193,7 +195,7 @@ class W3MImageDisplayer(ImageDisplayer, FileManagerAware):
         fontw, fonth, border = self._get_dimensions()
 
         cmd = "6;{x};{y};{w};{h}\n4;\n3;\n".format(
-            x=int((start_x - 0.2) * fontw) + border,
+            x=int((start_x) * fontw) + border,
             y=(start_y * fonth) + border,
             # y = int((start_y + 1) * fonth), # (for tmux top status bar)
             w=int((width + 0.4) * fontw),
@@ -221,7 +223,7 @@ class W3MImageDisplayer(ImageDisplayer, FileManagerAware):
             raise ImgDisplayUnsupportedException
 
         max_width_pixels = max_width * fontw
-        max_height_pixels = max_height * fonth - 2
+        max_height_pixels = (max_height * fonth) - 2
         # (for tmux top status bar)
         # max_height_pixels = (max_height - 1) * fonth - 2
 
