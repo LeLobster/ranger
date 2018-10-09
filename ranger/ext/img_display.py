@@ -118,25 +118,52 @@ class W3MImageDisplayer(ImageDisplayer, FileManagerAware):
                                 "the path manually by setting the %s environment variable.  (see "
                                 "man page)" % W3MIMGDISPLAY_ENV)
 
-    def _get_font_dimensions(self):
+    def _get_dimensions(self):
         # Get the height and width of a character displayed in the terminal in
-        # pixels.
+        # pixels and calulate a border.
         if self.binary_path is None:
             self.binary_path = self._find_w3mimgdisplay_executable()
+        geom = {"ioctl": {}, "w3m": {}}
         farg = struct.pack("HHHH", 0, 0, 0, 0)
         fd_stdout = sys.stdout.fileno()
         fretint = fcntl.ioctl(fd_stdout, termios.TIOCGWINSZ, farg)
-        rows, cols, xpixels, ypixels = struct.unpack("HHHH", fretint)
-        if xpixels == 0 and ypixels == 0:
-            process = Popen([self.binary_path, "-test"], stdout=PIPE, universal_newlines=True)
-            output, _ = process.communicate()
-            output = output.split()
-            xpixels, ypixels = int(output[0]), int(output[1])
-            # adjust for misplacement
-            xpixels += 2
-            ypixels += 2
+        rows, cols, geom["ioctl"]["w"], geom["ioctl"]["h"] = struct.unpack("HHHH", fretint)
 
-        return (xpixels // cols), (ypixels // rows)
+        process = Popen([self.binary_path, "-test"], stdout=PIPE, universal_newlines=True)
+        output, _ = process.communicate()
+        output = output.split()
+        geom["w3m"]["w"], geom["w3m"]["h"] = int(output[0]), int(output[1])
+        # adjust for misplacement
+        geom["w3m"]["w"] += 2
+        geom["w3m"]["h"] += 2
+
+        # default to using w3m's values in case ioctl fails
+        xpixels = geom["w3m"]["w"]
+        ypixels = geom["w3m"]["h"]
+        font_dims = {"w": xpixels // cols, "h": ypixels // rows}
+        # also keep `w3m_ofset` because when ioctl fails it's impossible
+        # to get reliable font dimensions for some terminals(*), which
+        # makes it impossible to reliably calculate the border size.
+        # Also defaulting the border to 0, like it is in rc.conf, keeps
+        # xterm (without a border) cleanly placing w3m. Relying on w3m or ioctl
+        # would cause atleast a couple px of misalignment
+        border = self.fm.settings.w3m_offset
+        # some terminals (terminator, gnome term?) cause ioctl to return 0,0
+        #
+        # TODO: Account for terminals where ioctl differs from w3m in width
+        # because the scrollbar is enabled. Currently I know Uxterm does it
+        if geom["ioctl"]["w"] + geom["ioctl"]["h"] > 0:
+            # use smallest value for font size calc but biggest for border calc
+            if geom["ioctl"]["h"] < geom["w3m"]["h"]:
+                font_dims = {"w": geom["ioctl"]["w"] // cols,
+                             "h": geom["ioctl"]["h"] // rows}
+                total_height_rows = rows * font_dims["h"]
+                border = (ypixels - total_height_rows) // 2
+
+        # Quickly tested this in st, urxvt terminator, xterm, mlterm
+        # with different geometry, fonts and border sizes
+        ## *) terminator & gnome-terminal
+        return font_dims["w"], font_dims["h"], border
 
     def draw(self, path, start_x, start_y, width, height):
         if not self.is_initialized or self.process.poll() is not None:
@@ -163,11 +190,11 @@ class W3MImageDisplayer(ImageDisplayer, FileManagerAware):
         if not self.is_initialized or self.process.poll() is not None:
             self.initialize()
 
-        fontw, fonth = self._get_font_dimensions()
+        fontw, fonth, border = self._get_dimensions()
 
         cmd = "6;{x};{y};{w};{h}\n4;\n3;\n".format(
-            x=int((start_x - 0.2) * fontw),
-            y=start_y * fonth,
+            x=int((start_x - 0.2) * fontw) + border,
+            y=(start_y * fonth) + border,
             # y = int((start_y + 1) * fonth), # (for tmux top status bar)
             w=int((width + 0.4) * fontw),
             h=height * fonth + 1,
@@ -189,7 +216,7 @@ class W3MImageDisplayer(ImageDisplayer, FileManagerAware):
         start_x, start_y, max_height and max_width specify the drawing area.
         They are expressed in number of characters.
         """
-        fontw, fonth = self._get_font_dimensions()
+        fontw, fonth, border = self._get_dimensions()
         if fontw == 0 or fonth == 0:
             raise ImgDisplayUnsupportedException
 
@@ -219,8 +246,8 @@ class W3MImageDisplayer(ImageDisplayer, FileManagerAware):
             width = (width * max_height_pixels) // height
             height = max_height_pixels
 
-        start_x = int((start_x - 0.2) * fontw) + self.fm.settings.w3m_offset
-        start_y = (start_y * fonth) + self.fm.settings.w3m_offset
+        start_x = int((start_x - 0.2) * fontw) + border
+        start_y = (start_y * fonth) + border
 
         return "0;1;{x};{y};{w};{h};;;;;{filename}\n4;\n3;\n".format(
             x=start_x,
